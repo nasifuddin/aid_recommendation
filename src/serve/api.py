@@ -1,16 +1,23 @@
 from fastapi import FastAPI
 import pandas as pd
 from joblib import load
+import yaml
+
 from src.data.preprocess import preprocess
 from src.features.build_features import engineer_features
 
 app = FastAPI(title="Poverty Graduation ML API")
 
-# Load models + feature lists
-eligibility_model = load("artifacts/models/eligibility.joblib")
-eligibility_features = load("artifacts/models/eligibility_features.joblib")
+# Load artifacts
+elig_features = load("artifacts/models/eligibility_features.joblib")
+elig_base = load("artifacts/models/eligibility_base_models.joblib")  # dict of models
+elig_meta = load("artifacts/models/eligibility_meta.joblib")
 aid_model = load("artifacts/models/aid_recommendation.joblib")
 aid_features = load("artifacts/models/aid_features.joblib")
+
+with open("config/thresholds.yaml","r") as f:
+    TH = yaml.safe_load(f)
+ELIG_THR = TH.get("eligibility_threshold", 0.5)
 
 EXPECTED_COLS = [
     "Income_Monthly_per_head","Total_Income_Annualy","Loans_Outstanding",
@@ -20,48 +27,46 @@ EXPECTED_COLS = [
     "has_under5","has_50_plus","has_18_50_Family_member","Gurdian_Age"
 ]
 
-# ---------- TASK 1 ----------
+def align(df, cols):
+    for c in cols:
+        if c not in df.columns:
+            df[c] = 0
+    return df[cols]
+
+def predict_elig_proba(dfX):
+    # stacked features from base models
+    import numpy as np
+    stack = np.column_stack([
+        elig_base["lgbm"].predict_proba(dfX)[:,1],
+        elig_base["xgb"].predict_proba(dfX)[:,1],
+        elig_base["rf"].predict_proba(dfX)[:,1],
+        elig_base["logreg"].predict_proba(dfX)[:,1],
+    ])
+    return elig_meta.predict_proba(stack)[:,1]
+
 @app.post("/score")
 def score(payload: dict):
     for col in EXPECTED_COLS:
         payload.setdefault(col, 0)
-
     df = pd.DataFrame([payload])
     df = engineer_features(preprocess(df))
+    df = align(df, elig_features)
+    p = float(predict_elig_proba(df)[0])
+    return {"p_eligible": p, "threshold": ELIG_THR, "decision": int(p >= ELIG_THR)}
 
-    # Align with training columns
-    for col in eligibility_features:
-        if col not in df.columns:
-            df[col] = 0
-    df = df[eligibility_features]
-
-    p = eligibility_model.predict_proba(df)[:, 1][0]
-    return {"p_eligible": float(p)}
-
-# ---------- TASK 2 ----------
 @app.post("/recommend")
 def recommend(payload: dict):
     for col in EXPECTED_COLS:
         payload.setdefault(col, 0)
-
     df = pd.DataFrame([payload])
     df = engineer_features(preprocess(df))
-
-    # Align to training feature list
-    for col in aid_features:
-        if col not in df.columns:
-            df[col] = 0
-    df = df[aid_features]
-
-    preds = aid_model.predict_proba(df)[0]
+    df = align(df, aid_features)
+    probs = aid_model.predict_proba(df)[0]
     classes = aid_model.classes_
-
-    # Get top recommendations
-    top1 = classes[preds.argmax()]
-    top2 = classes[preds.argsort()[-2]] if len(classes) > 1 else top1
-
+    order = probs.argsort()[::-1]
     return {
-        "Aid_Probabilities": dict(zip(classes, map(float, preds))),
-        "Top_1": top1,
-        "Top_2": top2
+        "eligible_threshold_used": ELIG_THR,
+        "Aid_Probabilities": {str(classes[i]): float(probs[i]) for i in range(len(classes))},
+        "Top_1": str(classes[order[0]]),
+        "Top_2": str(classes[order[1]]) if len(classes) > 1 else str(classes[order[0]])
     }

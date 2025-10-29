@@ -1,38 +1,43 @@
 import pandas as pd
 from joblib import dump
-from src.data.preprocess import preprocess
-from src.features.build_features import engineer_features
-from src.labels.build_task2_labels import build_labels
 from lightgbm import LGBMClassifier
-import numpy as np
+import yaml
 
-# Load and prep
-df = preprocess(pd.read_csv("data/raw/Participant_Selection_Final.csv"))
+from src.data.preprocess import load, preprocess, drop_non_numeric_noise
+from src.features.build_features import engineer_features
+from src.labels.build_task2_labels import compute_percentiles, build_multilabel, write_thresholds_yaml, collapse_priority
+
+PATH = "data/raw/Participant_Selection_Final.csv"
+
+# load + prep
+df = load(PATH)
+df = preprocess(df)
 df = engineer_features(df)
 
-# Percentile thresholds for financial stress
-p10 = df["Income_Monthly_per_head"].quantile(0.10)
-p80 = (df["Loans_Outstanding"] / (df["Total_Income_Annualy"]+1)).quantile(0.80)
+# percentiles → thresholds.yaml
+thr = compute_percentiles(df)
+write_thresholds_yaml("config/thresholds.yaml", thr)
 
-df = build_labels(df, p10, p20=None, p80=p80)
+# build weak multi-labels
+import yaml as _y
+with open("config/thresholds.yaml","r") as f:
+    T = _y.safe_load(f)
+df = build_multilabel(df, thresholds=T, k_triggers=T.get("cash_grant_k_triggers",2))
 
-# Simplify to single-label based on priority
-def collapse(row):
-    if row["label_health_support"]: return "Health Support"
-    elif row["label_cash_grant"]: return "Cash Grant"
-    elif row["label_livelihood_asset"]: return "Livelihood Asset"
-    elif row["label_training"]: return "Training"
-    return "Training"
+# collapse to single label using priority
+order = T.get("priority_order", ["health_support","cash_grant","livelihood_asset","training"])
+df["Aid_Target"] = df.apply(lambda r: collapse_priority(r, order), axis=1)
 
-df["Aid_Target"] = df.apply(collapse, axis=1)
-
+# train set (optionally restrict to eligible==Yes records if desired)
+X = drop_non_numeric_noise(df).select_dtypes(include=["number","bool"]).drop(columns=["Participant_Selected_For_AID"], errors="ignore")
 y = df["Aid_Target"]
-X = df.select_dtypes(include=["number", "bool"]).drop(columns=["Aid_Target"], errors="ignore")
 
-# Train
-model = LGBMClassifier(objective="multiclass", num_class=4, random_state=42)
-model.fit(X, y)
+with open("config/params.yaml","r") as f:
+    cfg = yaml.safe_load(f)
 
-dump(model, "artifacts/models/aid_recommendation.joblib")
+aid = LGBMClassifier(objective="multiclass", random_state=cfg["seed"], **cfg["aid"]["lgbm"])
+aid.fit(X, y)
+
+dump(aid, "artifacts/models/aid_recommendation.joblib")
 dump(list(X.columns), "artifacts/models/aid_features.joblib")
-print("✅ Aid recommendation model saved.")
+print("✅ Saved: aid_recommendation model + features.")

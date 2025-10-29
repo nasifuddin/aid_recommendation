@@ -1,0 +1,11 @@
+income_pc_p10: 1428.57142857143
+income_pc_p20: null
+dti_p80: 0.0
+cash_grant_k_triggers: 2
+priority_order:
+- health_support
+- cash_grant
+- livelihood_asset
+- training
+capacity_target: global
+eligibility_threshold: 0.35

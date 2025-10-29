@@ -1,6 +1,0 @@
-income_pc_p10: null
-income_pc_p20: null
-dti_p80: null
-cash_grant_k_triggers: 2
-priority_order: [health_support, cash_grant, livelihood_asset, training]
-capacity_target: global
