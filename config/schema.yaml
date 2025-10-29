@@ -1,0 +1,8 @@
+columns:
+  Participant_Selected_For_AID: {dtype: str, values: ["Yes", "No"]}
+  Aid_Type_Recomended: {dtype: str, values: ["Enterprise Development", "Both", "Skill Development"]}
+  Income_Monthly_per_head: {dtype: float, min: 0}
+  Total_Income_Annualy: {dtype: float, min: 0}
+  Loans_Outstanding: {dtype: float, min: 0}
+  Savings_Amt: {dtype: float, min: 0}
+  Productive_Asset_Value: {dtype: float, min: 0}
